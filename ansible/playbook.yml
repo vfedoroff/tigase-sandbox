@@ -1,0 +1,162 @@
+---
+- hosts: localhost
+  sudo: yes
+  sudo_user: root
+  remote_user: vagrant
+  vars:
+    - mysql_root_password: password
+    - tigase_home: /opt/tigase
+    - tigase_db: tigasedb
+    - tigase_db_user: tigase
+    - tigase_db_user_password: password
+    - tigase_xmpp_domain: 192.168.33.10
+    - tigase_etc_dir: /etc/tigase
+    - tigase_log_dir: /var/log/tigase
+
+  handlers:
+    - name: restart mysql
+      service: name=mysql state=restarted
+  tasks:
+    # Install JAVA
+    - name: Install packages for Oracle JDK 7
+      apt: pkg={{item}} state=latest
+      with_items:
+        - debconf
+        - debconf-utils
+    - apt: name="python-software-properties" state=present
+
+    - name: Install Java Repo
+      apt_repository: repo="ppa:webupd8team/java" state=present
+      changed_when: false
+
+    - name: Automatically select the Oracle License
+      shell: echo debconf shared/accepted-oracle-license-v1-1 select true | sudo debconf-set-selections
+      changed_when: false
+
+    - apt: name={{item}} state=latest update_cache=yes
+      with_items:
+      -  oracle-java7-installer
+      -  oracle-java7-set-default
+
+    - name: Set JAVA_HOME environment variable
+      lineinfile: dest=/etc/environment regexp='^JAVA_HOME.*' line='JAVA_HOME=/usr/lib/jvm/java-7-oracle' insertbefore='^PATH.*'
+
+    # Install MySQL
+    - name: Install MySQL
+      apt: name={{ item }} update_cache=yes cache_valid_time=3600 state=present
+      with_items:
+      - python-mysqldb
+      - mysql-server
+      - mysql-client
+
+    - name: Setup additional configuration
+      template: src='templates/tigase.cnf' dest='/etc/mysql/conf.d' mode=0644
+      notify: restart mysql
+
+    - name: Start the MySQL service
+      service: >
+        name=mysql
+        state=started
+        enabled=true
+
+    - name: update mysql root password for all root accounts
+      mysql_user: >
+        name=root
+        host="{{ item }}"
+        password="{{ mysql_root_password }}"
+        login_user=root
+        login_password="{{ mysql_root_password }}"
+        check_implicit_admin=yes
+        priv="*.*:ALL,GRANT"
+      with_items:
+        - 127.0.0.1
+        - ::1
+        - localhost
+    # Setup tigase
+    - name: Download Tigase
+      get_url: url=https://projects.tigase.org/attachments/download/2659/tigase-server-7.0.2-b3821-dist.tar.gz dest=/opt/tigase.tar.gz
+
+    - name: Assures dir {{tigase_home}} exists
+      file: path="{{tigase_home}}" state=directory
+
+    - name: Extract archive
+      shell: tar zxfv /opt/tigase.tar.gz -C {{tigase_home}} --strip-components=1
+      args:
+        creates: "{{tigase_home}}/package.html"
+
+    - name: Fix permissions
+      file: path="{{tigase_home}}/scripts/tigase.sh" mode="u+x"
+
+    # Prepare MySQL database for the Tigase Server
+    - name: Drop the database for refresh the schema
+      mysql_db: >
+        name={{tigase_db}}
+        state=absent
+        login_user=root
+        login_password="{{ mysql_root_password }}"
+
+    - name: Create the database for the Tigase server
+      mysql_db: >
+        name={{tigase_db}}
+        collation=utf8_general_ci
+        encoding=utf8
+        state=present
+        login_user=root
+        login_password="{{ mysql_root_password }}"
+
+    - name: Create tigase db user
+      mysql_user: >
+        name={{ tigase_db_user }}
+        host="{{ item }}"
+        password="{{ tigase_db_user_password }}"
+        login_user=root
+        login_password="{{ mysql_root_password }}"
+        check_implicit_admin=yes
+        priv="{{tigase_db}}.*:ALL,GRANT"
+      with_items:
+        - "{{ ansible_hostname }}"
+        - 127.0.0.1
+        - ::1
+        - localhost
+        - "%"
+
+    - name: Grant additional permissions
+      mysql_user: >
+        name={{tigase_db_user}}
+        password="{{ tigase_db_user_password }}"
+        host="{{ item }}"
+        append_privs=true
+        login_user=root
+        login_password="{{ tigase_db_user_password }}"
+        check_implicit_admin=yes
+        priv="mysql.proc:SELECT, INSERT, UPDATE, GRANT"
+        state=present
+      with_items:
+        - "{{ ansible_hostname }}"
+        - 127.0.0.1
+        - ::1
+        - localhost
+        - "%"
+
+    - name: "Load database schema to initialize the Tigase server database space"
+      shell: 'mysql -uroot -p{{ mysql_root_password }} {{tigase_db}} -e "source database/mysql-schema-5-1.sql"'
+      args:
+        chdir: "{{tigase_home}}/"
+
+    - name: "Install Tigase"
+      shell: 'scripts/debian/tigase-install.sh'
+      args:
+        chdir: "{{tigase_home}}/"
+
+    - name: Configure /etc/default/tigase
+      template: src='templates/tigase.conf' dest='/etc/default/tigase' mode=0644
+
+    - name: Configure init.properties
+      template: src='templates/init.properties' dest='/etc/tigase/init.properties' mode=0644
+
+    - name: Create init.d file
+      template: src='templates/tigase.init.d' dest='/etc/init.d/tigase' mode=0700
+
+    - shell: cp /opt/tigase/etc/logback.xml /etc/tigase/tigase-server.xml
+      args:
+        creates: "/etc/tigase/tigase-server.xml"
