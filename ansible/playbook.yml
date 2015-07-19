@@ -40,6 +40,8 @@
 
     - name: Set JAVA_HOME environment variable
       lineinfile: dest=/etc/environment regexp='^JAVA_HOME.*' line='JAVA_HOME=/usr/lib/jvm/java-7-oracle' insertbefore='^PATH.*'
+      changed_when: false
+
 
     # Install MySQL
     - name: Install MySQL
@@ -48,6 +50,8 @@
       - python-mysqldb
       - mysql-server
       - mysql-client
+      changed_when: false
+
 
     - name: Setup additional configuration
       template: src='templates/tigase.cnf' dest='/etc/mysql/conf.d' mode=0644
@@ -72,20 +76,23 @@
         - 127.0.0.1
         - ::1
         - localhost
+      changed_when: false
+
     # Setup tigase
     - name: Download Tigase
       get_url: url=https://projects.tigase.org/attachments/download/2659/tigase-server-7.0.2-b3821-dist.tar.gz dest=/opt/tigase.tar.gz
+      changed_when: false
+
 
     - name: Assures dir {{tigase_home}} exists
       file: path="{{tigase_home}}" state=directory
+      changed_when: false
+
 
     - name: Extract archive
       shell: tar zxfv /opt/tigase.tar.gz -C {{tigase_home}} --strip-components=1
-      args:
-        creates: "{{tigase_home}}/package.html"
+      changed_when: false
 
-    - name: Fix permissions
-      file: path="{{tigase_home}}/scripts/tigase.sh" mode="u+x"
 
     # Prepare MySQL database for the Tigase Server
     - name: Drop the database for refresh the schema
@@ -103,6 +110,8 @@
         state=present
         login_user=root
         login_password="{{ mysql_root_password }}"
+      changed_when: false
+
 
     - name: Create tigase db user
       mysql_user: >
@@ -119,6 +128,8 @@
         - ::1
         - localhost
         - "%"
+      changed_when: false
+
 
     - name: Grant additional permissions
       mysql_user: >
@@ -137,16 +148,22 @@
         - ::1
         - localhost
         - "%"
+      changed_when: false
+
 
     - name: "Load database schema to initialize the Tigase server database space"
       shell: 'mysql -uroot -p{{ mysql_root_password }} {{tigase_db}} -e "source database/mysql-schema-5-1.sql"'
       args:
         chdir: "{{tigase_home}}/"
+      changed_when: false
+
 
     - name: "Install Tigase"
       shell: 'scripts/debian/tigase-install.sh'
       args:
         chdir: "{{tigase_home}}/"
+      changed_when: false
+
 
     - name: Configure /etc/default/tigase
       template: src='templates/tigase.conf' dest='/etc/default/tigase' mode=0644
@@ -160,3 +177,9 @@
     - shell: cp /opt/tigase/etc/logback.xml /etc/tigase/tigase-server.xml
       args:
         creates: "/etc/tigase/tigase-server.xml"
+
+    - name: Start the Tigase service
+      service: >
+        name=tigase
+        state=started
+        enabled=true
